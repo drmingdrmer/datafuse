@@ -124,8 +124,6 @@ pub struct MetaStore {
 // /// - raft log: distributed logs
 // /// - raft state machine.
 // pub struct C {
-//     /// The Raft log.
-//     pub log: sled::Tree,
 //
 //     /// The Raft state machine.
 //     /// State machine is a relatively standalone component in raft.
