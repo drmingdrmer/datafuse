@@ -371,7 +371,7 @@ impl StateMachine {
                     .await?;
                 return Ok(AppliedState::None);
             }
-            EntryPayload::SnapshotPointer(_) => {}
+            EntryPayload::PurgedMarker => {}
         };
 
         Ok(AppliedState::None)

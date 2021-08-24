@@ -24,7 +24,7 @@ use async_raft::raft::ClientWriteRequest;
 use async_raft::raft::Entry;
 use async_raft::raft::EntryPayload;
 use async_raft::raft::MembershipConfig;
-use async_raft::storage::CurrentSnapshotData;
+use async_raft::storage;
 use async_raft::storage::HardState;
 use async_raft::storage::InitialState;
 use async_raft::ClientWriteError;
@@ -304,7 +304,7 @@ impl MetaStore {
 
 #[async_trait]
 impl RaftStorage<LogEntry, AppliedState> for MetaStore {
-    type Snapshot = Cursor<Vec<u8>>;
+    type SnapshotData = Cursor<Vec<u8>>;
     type ShutdownError = ShutdownError;
 
     #[tracing::instrument(level = "debug", skip(self), fields(id=self.id))]
@@ -388,40 +388,31 @@ impl RaftStorage<LogEntry, AppliedState> for MetaStore {
         Ok(())
     }
 
-    #[tracing::instrument(level = "info", skip(self, entry), fields(id=self.id))]
-    async fn append_entry_to_log(&self, entry: &Entry<LogEntry>) -> anyhow::Result<()> {
-        self.log.insert(entry).await?;
+    #[tracing::instrument(level = "info", skip(self, entries), fields(id=self.id))]
+    async fn append_to_log(&self, entries: &[&Entry<LogEntry>]) -> anyhow::Result<()> {
+        // TODO(xp): void cloning.
+        let entries = entries.iter().map(|x| (*x).clone()).collect::<Vec<_>>();
+        self.log.append(&entries).await?;
         Ok(())
     }
 
     #[tracing::instrument(level = "info", skip(self, entries), fields(id=self.id))]
-    async fn replicate_to_log(&self, entries: &[Entry<LogEntry>]) -> anyhow::Result<()> {
-        // TODO(xp): replicated_to_log should not block. Do the actual work in another task.
-        self.log.append(entries).await?;
-        Ok(())
-    }
-
-    #[tracing::instrument(level = "info", skip(self), fields(id=self.id))]
-    async fn apply_entry_to_state_machine(
+    async fn apply_to_state_machine(
         &self,
-        entry: &Entry<LogEntry>,
-    ) -> anyhow::Result<AppliedState> {
+        entries: &[&Entry<LogEntry>],
+    ) -> anyhow::Result<Vec<AppliedState>> {
         let mut sm = self.state_machine.write().await;
-        let resp = sm.apply(entry).await?;
-        Ok(resp)
-    }
 
-    #[tracing::instrument(level = "info", skip(self, entries), fields(id=self.id))]
-    async fn replicate_to_state_machine(&self, entries: &[&Entry<LogEntry>]) -> anyhow::Result<()> {
-        let mut sm = self.state_machine.write().await;
+        let mut results = Vec::with_capacity(entries.len());
         for entry in entries {
-            sm.apply(*entry).await?;
+            let res = sm.apply(*entry).await?;
+            results.push(res);
         }
-        Ok(())
+        Ok(results)
     }
 
     #[tracing::instrument(level = "info", skip(self), fields(id=self.id))]
-    async fn do_log_compaction(&self) -> anyhow::Result<CurrentSnapshotData<Self::Snapshot>> {
+    async fn do_log_compaction(&self) -> anyhow::Result<storage::Snapshot<Self::SnapshotData>> {
         // NOTE: do_log_compaction is guaranteed to be serialized called by RaftCore.
 
         // TODO(xp): add test of small chunk snapshot transfer and installation
@@ -461,14 +452,14 @@ impl RaftStorage<LogEntry, AppliedState> for MetaStore {
 
         tracing::debug!(snapshot_size = snapshot_size, "log compaction complete");
 
-        Ok(CurrentSnapshotData {
+        Ok(storage::Snapshot {
             meta: snap_meta,
             snapshot: Box::new(Cursor::new(data)),
         })
     }
 
     #[tracing::instrument(level = "info", skip(self), fields(id=self.id))]
-    async fn create_snapshot(&self) -> anyhow::Result<Box<Self::Snapshot>> {
+    async fn begin_receiving_snapshot(&self) -> anyhow::Result<Box<Self::SnapshotData>> {
         Ok(Box::new(Cursor::new(Vec::new())))
     }
 
@@ -476,7 +467,7 @@ impl RaftStorage<LogEntry, AppliedState> for MetaStore {
     async fn finalize_snapshot_installation(
         &self,
         meta: &SnapshotMeta,
-        snapshot: Box<Self::Snapshot>,
+        snapshot: Box<Self::SnapshotData>,
     ) -> anyhow::Result<()> {
         // TODO(xp): disallow installing a snapshot with smaller last_applied.
 
@@ -516,12 +507,13 @@ impl RaftStorage<LogEntry, AppliedState> for MetaStore {
     #[tracing::instrument(level = "info", skip(self), fields(id=self.id))]
     async fn get_current_snapshot(
         &self,
-    ) -> anyhow::Result<Option<CurrentSnapshotData<Self::Snapshot>>> {
+    ) -> anyhow::Result<Option<storage::Snapshot<Self::SnapshotData>>> {
         tracing::info!("got snapshot start");
+
         let snap = match &*self.current_snapshot.read().await {
             Some(snapshot) => {
                 let data = snapshot.data.clone();
-                Ok(Some(CurrentSnapshotData {
+                Ok(Some(storage::Snapshot {
                     meta: snapshot.meta.clone(),
                     snapshot: Box::new(Cursor::new(data)),
                 }))

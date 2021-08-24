@@ -97,7 +97,7 @@ impl Network {
 #[async_trait]
 impl RaftNetwork<LogEntry> for Network {
     #[tracing::instrument(level = "debug", skip(self, rpc), fields(id=self.sto.id, rpc=%rpc.summary()))]
-    async fn append_entries(
+    async fn send_append_entries(
         &self,
         target: NodeId,
         rpc: AppendEntriesRequest<LogEntry>,
@@ -119,7 +119,7 @@ impl RaftNetwork<LogEntry> for Network {
     }
 
     #[tracing::instrument(level = "debug", skip(self, rpc), fields(id=self.sto.id, rpc=%rpc.summary()))]
-    async fn install_snapshot(
+    async fn send_install_snapshot(
         &self,
         target: NodeId,
         rpc: InstallSnapshotRequest,
@@ -139,7 +139,7 @@ impl RaftNetwork<LogEntry> for Network {
     }
 
     #[tracing::instrument(level = "debug", skip(self, rpc), fields(id=self.sto.id, rpc=%rpc.summary()))]
-    async fn vote(&self, target: NodeId, rpc: VoteRequest) -> anyhow::Result<VoteResponse> {
+    async fn send_vote(&self, target: NodeId, rpc: VoteRequest) -> anyhow::Result<VoteResponse> {
         tracing::debug!("vote req to: id={} {:?}", target, rpc);
 
         let mut client = self.make_client(&target).await?;
